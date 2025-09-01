@@ -1,17 +1,20 @@
-// pages/api/schools/index.js
-import multer from 'multer';
-import path from 'path';
-import fs from 'fs';
-import pool from '../../../lib/db';
+import multer from "multer";
+import pool from "../../../lib/db";
+import { v2 as cloudinary } from "cloudinary";
+import { CloudinaryStorage } from "multer-storage-cloudinary";
 
-const uploadDir = path.join(process.cwd(), 'public', 'schoolImages');
-fs.mkdirSync(uploadDir, { recursive: true });
+cloudinary.config({
+  cloud_name: process.env.CLOUDINARY_CLOUD_NAME,
+  api_key: process.env.CLOUDINARY_API_KEY,
+  api_secret: process.env.CLOUDINARY_API_SECRET,
+});
 
-const storage = multer.diskStorage({
-  destination: uploadDir,
-  filename: (_req, file, cb) => {
-    const unique = Date.now() + '-' + Math.round(Math.random() * 1e9);
-    cb(null, unique + path.extname(file.originalname));
+
+const storage = new CloudinaryStorage({
+  cloudinary,
+  params: {
+    folder: "schoolImages", 
+    allowed_formats: ["jpg", "jpeg", "png"],
   },
 });
 
@@ -19,27 +22,26 @@ const upload = multer({ storage });
 
 export const config = {
   api: {
-    bodyParser: false, // Multer handle करेगा
+    bodyParser: false,
   },
 };
 
 export default async function handler(req, res) {
   try {
-    if (req.method === 'POST') {
+    if (req.method === "POST") {
       return new Promise((resolve, reject) => {
-        upload.single('image')(req, {}, async (err) => {
+        upload.single("image")(req, {}, async (err) => {
           if (err) {
-            console.error('Upload error:', err);
-            return res.status(400).json({ error: 'File upload failed' });
+            console.error("Upload error:", err);
+            return res.status(400).json({ error: "File upload failed" });
           }
 
           try {
             const { name, address, city, state, contact, email_id } = req.body;
-            const imagePath = req.file ? `/schoolImages/${req.file.filename}` : null;
+            const imagePath = req.file ? req.file.path : null;
 
-            // Validate required fields
             if (!name || !address || !city || !state || !contact || !email_id) {
-              return res.status(400).json({ error: 'All fields are required' });
+              return res.status(400).json({ error: "All fields are required" });
             }
 
             await pool.query(
@@ -48,30 +50,30 @@ export default async function handler(req, res) {
               [name, address, city, state, contact, imagePath, email_id]
             );
 
-            res.status(201).json({ message: 'School added successfully' });
+            res.status(201).json({ message: "School added successfully" });
             resolve();
           } catch (dbError) {
-            console.error('Database error:', dbError);
-            res.status(500).json({ error: 'Database operation failed' });
+            console.error("Database error:", dbError);
+            res.status(500).json({ error: "Database operation failed" });
             resolve();
           }
         });
       });
-    } else if (req.method === 'GET') {
+    } else if (req.method === "GET") {
       try {
         const [rows] = await pool.query(
-          'SELECT id, name, address, city, state, contact, image, email_id FROM schools ORDER BY id DESC'
+          "SELECT id, name, address, city, state, contact, image, email_id FROM schools ORDER BY id DESC"
         );
         res.status(200).json(rows);
       } catch (dbError) {
-        console.error('Database error:', dbError);
-        res.status(500).json({ error: 'Failed to fetch schools' });
+        console.error("Database error:", dbError);
+        res.status(500).json({ error: "Failed to fetch schools" });
       }
     } else {
-      res.status(405).json({ error: 'Method Not Allowed' });
+      res.status(405).json({ error: "Method Not Allowed" });
     }
   } catch (error) {
-    console.error('API error:', error);
-    res.status(500).json({ error: 'Internal server error' });
+    console.error("API error:", error);
+    res.status(500).json({ error: "Internal server error" });
   }
 }
