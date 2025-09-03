@@ -1,26 +1,158 @@
 import { useForm } from 'react-hook-form';
 import axios from 'axios';
-import { useState } from 'react';
+import { useState, useRef } from 'react';
 
 export default function AddSchool() {
   const { register, handleSubmit, formState: { errors }, reset } = useForm();
   const [status, setStatus] = useState(null);
+  const [isUploading, setIsUploading] = useState(false);
+  const fileInputRef = useRef(null);
+  const { ref: imageRegisterRef, ...imageRegister } = register('image', { required: 'Image is required' });
+
+  // Image compression function that guarantees result under target bytes
+  const compressImage = (file, targetBytes = 9.5 * 1024 * 1024) => {
+    return new Promise((resolve) => {
+      const canvas = document.createElement('canvas');
+      const ctx = canvas.getContext('2d');
+      const img = new Image();
+
+      img.onload = () => {
+        let width = img.width;
+        let height = img.height;
+        let maxWidth = 1920; // initial cap
+
+        const compressOnce = (quality) => new Promise((res) => {
+          canvas.width = width;
+          canvas.height = height;
+          ctx.clearRect(0, 0, width, height);
+          ctx.drawImage(img, 0, 0, width, height);
+          canvas.toBlob((blob) => res(blob), 'image/jpeg', quality);
+        });
+
+        const tryReduce = async () => {
+          let quality = 0.8;
+          while (true) {
+            const blob = await compressOnce(quality);
+            if (blob && blob.size <= targetBytes) {
+              return resolve(blob);
+            }
+            if (quality > 0.2) {
+              quality -= 0.1;
+              continue;
+            }
+            // If quality is already low, reduce dimensions and retry
+            if (width > maxWidth) {
+              const ratio = maxWidth / width;
+              width = Math.floor(width * ratio);
+              height = Math.floor(height * ratio);
+            } else if (width > 1280) {
+              const ratio = 1280 / width;
+              width = Math.floor(width * ratio);
+              height = Math.floor(height * ratio);
+            } else if (width > 1024) {
+              const ratio = 1024 / width;
+              width = Math.floor(width * ratio);
+              height = Math.floor(height * ratio);
+            } else {
+              // Cannot reduce further meaningfully; return best effort
+              return resolve(blob);
+            }
+            // reset quality a bit higher after downscaling
+            quality = 0.7;
+          }
+        };
+
+        // Initial width cap before starting loop
+        if (width > maxWidth) {
+          const ratio = maxWidth / width;
+          width = Math.floor(width * ratio);
+          height = Math.floor(height * ratio);
+        }
+
+        tryReduce();
+      };
+
+      img.src = URL.createObjectURL(file);
+    });
+  };
+
+  // File validation function
+  const validateFile = (file) => {
+    const maxSize = 10 * 1024 * 1024; // 10MB
+    const allowedTypes = ['image/jpeg', 'image/jpg', 'image/png'];
+    
+    if (!allowedTypes.includes(file.type)) {
+      return 'Please select a valid image file (JPEG, JPG, or PNG)';
+    }
+    
+    if (file.size > maxSize) {
+      return 'File size must be less than 10MB';
+    }
+    
+    return null;
+  };
 
   const onSubmit = async (data) => {
     try {
       setStatus(null);
+      setIsUploading(true);
+      
       const formData = new FormData();
+      
+      // Handle image file with validation and compression
+      if (data.image && data.image[0]) {
+        const file = data.image[0];
+        
+        // Validate file
+        const validationError = validateFile(file);
+        if (validationError) {
+          setStatus({ type: 'error', msg: validationError });
+          setIsUploading(false);
+          return;
+        }
+        
+        // Compress image if it's larger than ~5MB, and ensure <10MB final
+        let processedFile = file;
+        if (file.size > 5 * 1024 * 1024) {
+          setStatus({ type: 'info', msg: 'Compressing image...' });
+          const blob = await compressImage(file, 9.5 * 1024 * 1024);
+          // Wrap Blob as File so multer gets name and type
+          const newName = (file.name || 'upload')
+            .replace(/\.[^.]+$/, '') + '.jpg';
+          processedFile = new File([blob], newName, { type: 'image/jpeg' });
+          if (processedFile.size > 10 * 1024 * 1024) {
+            setStatus({ type: 'error', msg: 'Compressed image is still too large. Please choose a smaller image.' });
+            setIsUploading(false);
+            return;
+          }
+        }
+
+        formData.append('image', processedFile);
+      }
+      
+      // Add other form data
       Object.entries(data).forEach(([k, v]) => {
-        if (k === 'image') formData.append('image', v[0]);
-        else formData.append(k, v);
+        if (k !== 'image') formData.append(k, v);
       });
+      
       const res = await axios.post('/api/schools', formData, {
         headers: { 'Content-Type': 'multipart/form-data' },
       });
-      setStatus({ type: 'success', msg: res.data.message || 'Added!' });
+      
+      setStatus({ type: 'success', msg: res.data.message || 'School added successfully!' });
       reset();
+      if (fileInputRef.current) {
+        fileInputRef.current.value = '';
+      }
     } catch (err) {
-      setStatus({ type: 'error', msg: err.response?.data?.error || err.message });
+      const errorMsg = err.response?.data?.error || err.message;
+      if (errorMsg.includes('File size too large')) {
+        setStatus({ type: 'error', msg: 'Image file is too large. Please try a smaller image or compress it before uploading.' });
+      } else {
+        setStatus({ type: 'error', msg: errorMsg });
+      }
+    } finally {
+      setIsUploading(false);
     }
   };
 
@@ -129,8 +261,12 @@ export default function AddSchool() {
 
         <input
           type="file"
-          accept="image/*"
-          {...register('image', { required: 'Image is required' })}
+          accept="image/jpeg,image/jpg,image/png"
+          {...imageRegister}
+          ref={(el) => {
+            imageRegisterRef(el);
+            fileInputRef.current = el;
+          }}
           style={fileInput}
           onFocus={(e) => {
             e.target.style.border = '2px solid rgba(255, 255, 255, 0.6)';
@@ -142,21 +278,35 @@ export default function AddSchool() {
           }}
         />
         {errors.image && <span style={err}>{errors.image.message}</span>}
+        <p style={fileInfo}>
+          Supported formats: JPEG, JPG, PNG. Max size: 10MB. Large images will be automatically compressed.
+        </p>
 
         <button 
           type="submit" 
-          style={button}
+          disabled={isUploading}
+          style={{
+            ...button,
+            opacity: isUploading ? 0.7 : 1,
+            cursor: isUploading ? 'not-allowed' : 'pointer'
+          }}
           onMouseEnter={(e) => {
-            e.target.style.transform = 'translateY(-3px)';
-            e.target.style.background = 'rgba(255, 255, 255, 0.3)';
-            e.target.style.boxShadow = '0 12px 30px rgba(0,0,0,0.3)';
+            if (!isUploading) {
+              e.target.style.transform = 'translateY(-3px)';
+              e.target.style.background = 'rgba(255, 255, 255, 0.3)';
+              e.target.style.boxShadow = '0 12px 30px rgba(0,0,0,0.3)';
+            }
           }}
           onMouseLeave={(e) => {
-            e.target.style.transform = 'translateY(0)';
-            e.target.style.background = 'rgba(255, 255, 255, 0.2)';
-            e.target.style.boxShadow = '0 8px 20px rgba(0,0,0,0.2)';
+            if (!isUploading) {
+              e.target.style.transform = 'translateY(0)';
+              e.target.style.background = 'rgba(255, 255, 255, 0.2)';
+              e.target.style.boxShadow = '0 8px 20px rgba(0,0,0,0.2)';
+            }
           }}
-        >Save</button>
+        >
+          {isUploading ? 'Uploading...' : 'Save'}
+        </button>
         {status && (
           <p style={statusMessage(status.type)}>
             {status.msg}
@@ -249,6 +399,14 @@ const err = {
   textShadow: '0 2px 4px rgba(0,0,0,0.2)',
 };
 
+const fileInfo = {
+  fontSize: '12px',
+  color: 'rgba(255, 255, 255, 0.7)',
+  marginTop: '8px',
+  textAlign: 'center',
+  fontStyle: 'italic',
+};
+
 const statusMessage = (type) => ({
   marginTop: '20px',
   padding: '12px 20px',
@@ -258,8 +416,18 @@ const statusMessage = (type) => ({
   textShadow: '0 2px 4px rgba(0,0,0,0.2)',
   background: type === 'success' 
     ? 'rgba(34, 197, 94, 0.2)' 
+    : type === 'info'
+    ? 'rgba(59, 130, 246, 0.2)'
     : 'rgba(239, 68, 68, 0.2)',
-  color: type === 'success' ? '#22c55e' : '#ef4444',
-  border: `2px solid ${type === 'success' ? 'rgba(34, 197, 94, 0.3)' : 'rgba(239, 68, 68, 0.3)'}`,
+  color: type === 'success' 
+    ? '#22c55e' 
+    : type === 'info'
+    ? '#3b82f6'
+    : '#ef4444',
+  border: `2px solid ${type === 'success' 
+    ? 'rgba(34, 197, 94, 0.3)' 
+    : type === 'info'
+    ? 'rgba(59, 130, 246, 0.3)'
+    : 'rgba(239, 68, 68, 0.3)'}`,
   backdropFilter: 'blur(10px)',
 });

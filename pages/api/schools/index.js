@@ -18,7 +18,11 @@ const storage = new CloudinaryStorage({
   },
 });
 
-const upload = multer({ storage });
+// Add a size limit at multer-level to fail fast (>10MB rejected)
+const upload = multer({ 
+  storage,
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
 
 export const config = {
   api: {
@@ -33,7 +37,29 @@ export default async function handler(req, res) {
         upload.single("image")(req, {}, async (err) => {
           if (err) {
             console.error("Upload error:", err);
-            return res.status(400).json({ error: "File upload failed" });
+            // Handle Multer file size limit
+            if (err.code === 'LIMIT_FILE_SIZE') {
+              return res.status(400).json({
+                error: "Image too large. Max allowed size is 10MB.",
+              });
+            }
+
+            // Handle specific Cloudinary errors
+            if (err.message && err.message.includes('File size too large')) {
+              return res.status(400).json({ 
+                error: "File size too large. Please upload an image smaller than 10MB." 
+              });
+            }
+            
+            if (err.message && err.message.includes('Invalid image format')) {
+              return res.status(400).json({ 
+                error: "Invalid image format. Please upload a JPEG, JPG, or PNG file." 
+              });
+            }
+            
+            return res.status(400).json({ 
+              error: "File upload failed. Please try again with a different image." 
+            });
           }
 
           try {
@@ -54,7 +80,19 @@ export default async function handler(req, res) {
             resolve();
           } catch (dbError) {
             console.error("Database error:", dbError);
-            res.status(500).json({ error: "Database operation failed" });
+            
+            // If we have a file uploaded but database fails, we should clean it up
+            if (req.file && req.file.path) {
+              try {
+                await cloudinary.uploader.destroy(req.file.public_id);
+              } catch (cleanupError) {
+                console.error("Failed to cleanup uploaded file:", cleanupError);
+              }
+            }
+            
+            res.status(500).json({ 
+              error: "Failed to save school data. Please try again." 
+            });
             resolve();
           }
         });
